@@ -1,0 +1,39 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+env/
+venv/
+.venv/
+
+# Secrets folder
+secrets/.env
+
+# Streamlit default secrets 
+.streamlit/secrets.toml
+
+# Matplotlib cache
+*.matplotlib/
+*.matplotlib-*
+
+# IDE settings
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS junk files
+.DS_Store
+Thumbs.db
+
+# Jupyter Notebooks 
+*.ipynb
+
+# Distribution and build files
+dist/
+build/
+*.egg-info/

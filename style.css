@@ -1,0 +1,499 @@
+/* =====================================================================
+   ARTISAN CULINARY NOIR – Streamlit Edition (Simplified Slider)
+   ===================================================================== */
+
+@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,500;0,600;0,700;1,500&family=Inter:opsz,wght@14..32,300;400;500;600;700&family=JetBrains+Mono:wght@500&display=swap');
+
+:root {
+    --paper: #e8ddd0;
+    --paper-dark: #d4c8b8;
+    --stone: #92887b;
+    --stone-light: #b5aa9b;
+    --stone-dark: #6a6055;
+    --copper: #b87333;
+    --copper-light: #d4a05a;
+    --copper-dark: #8b5a2b;
+    --brass: #b5a642;
+    --brass-light: #d4c45a;
+    --brass-dark: #8a7d2e;
+    --terracotta: #c86a4a;
+    --terracotta-light: #e08a6a;
+    --terracotta-dark: #9e4a2e;
+    --wood-dark: #3d2b1f;
+    --wood-medium: #5c3f2a;
+    --wood-light: #7a5c3e;
+    --amber: #e8b04a;
+    --amber-glass: rgba(232, 176, 74, 0.25);
+    --glass-frost: rgba(255, 255, 255, 0.08);
+    --text-primary: #2c241e;
+    --text-secondary: #4a3f36;
+    --text-muted: #7a6e62;
+    --text-inverse: #f5ede4;
+    --shadow-soft: 0 8px 32px rgba(0,0,0,0.2);
+    --shadow-heavy: 0 16px 48px rgba(0,0,0,0.4);
+    --radius-card: 16px;
+    --radius-pill: 999px;
+    --radius-sm: 8px;
+    --transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+html, body, .stApp {
+    background:
+        radial-gradient(circle at 10% 20%, rgba(146,136,123,0.15) 0%, transparent 30%),
+        radial-gradient(circle at 90% 80%, rgba(146,136,123,0.12) 0%, transparent 40%),
+        radial-gradient(circle at 50% 50%, rgba(146,136,123,0.08) 0%, transparent 60%),
+        repeating-linear-gradient(45deg,
+            rgba(255,255,255,0.03) 0px,
+            rgba(255,255,255,0.03) 2px,
+            transparent 2px,
+            transparent 6px),
+        linear-gradient(135deg, var(--paper) 0%, var(--paper-dark) 100%) !important;
+    background-color: var(--paper) !important;
+    color: var(--text-primary) !important;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
+    line-height: 1.6;
+    min-height: 100vh;
+}
+
+.stApp { background: transparent !important; }
+.stApp > header { background: rgba(255,255,255,0.1) !important; backdrop-filter: blur(6px) !important; }
+
+.main {
+    background: transparent !important;
+    color: var(--text-primary) !important;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
+    line-height: 1.6;
+    padding: 1rem 2rem !important;
+}
+
+h1, h2, h3, h4, .stMarkdown h1, .stMarkdown h2, .stMarkdown h3 {
+    font-family: 'Playfair Display', Georgia, serif !important;
+    font-weight: 600 !important;
+    color: var(--text-primary) !important;
+    letter-spacing: 0.01em;
+}
+
+/* -------- STEP INDICATOR -------- */
+.step-container {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    margin: 2rem 0 2.8rem 0 !important;
+    padding: 0 2rem !important;
+    position: relative;
+}
+.step-container::before {
+    content: '';
+    position: absolute;
+    top: 24px;
+    left: 10%;
+    right: 10%;
+    height: 4px;
+    background: linear-gradient(90deg, var(--copper-dark), var(--copper), var(--copper-light), var(--copper), var(--copper-dark));
+    border-radius: 4px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+    z-index: 0;
+}
+.step-item {
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: center !important;
+    flex: 1 !important;
+    position: relative !important;
+    z-index: 1 !important;
+}
+.step-circle {
+    width: 52px !important;
+    height: 52px !important;
+    border-radius: 50% !important;
+    background: radial-gradient(circle at 30% 30%, var(--copper-light), var(--copper-dark)) !important;
+    border: 2px solid var(--copper-dark) !important;
+    box-shadow: 0 4px 8px rgba(0,0,0,0.3), inset 0 -2px 4px rgba(0,0,0,0.2), inset 0 2px 4px rgba(255,255,255,0.3) !important;
+    color: var(--text-inverse) !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    font-family: 'JetBrains Mono', monospace !important;
+    font-weight: 500 !important;
+    font-size: 1.1rem !important;
+    transition: var(--transition) !important;
+}
+.step-circle.active {
+    background: radial-gradient(circle at 30% 30%, var(--terracotta-light), var(--terracotta-dark)) !important;
+    border-color: var(--terracotta-dark) !important;
+    box-shadow: 0 0 0 6px rgba(200, 106, 74, 0.3), 0 8px 24px rgba(200,106,74,0.3) !important;
+    transform: scale(1.08) !important;
+}
+.step-circle.completed {
+    background: radial-gradient(circle at 30% 30%, #8aae8a, #4f7a4f) !important;
+    border-color: #4f7a4f !important;
+    box-shadow: 0 0 0 6px rgba(138,174,138,0.3) !important;
+}
+.step-circle.completed::after { content: '✓'; }
+.step-label {
+    margin-top: 12px !important;
+    font-size: 0.75rem !important;
+    font-weight: 700 !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.08em !important;
+    color: var(--text-muted) !important;
+    transition: var(--transition) !important;
+}
+.step-label.active { color: var(--terracotta-dark) !important; }
+.step-label.completed { color: #4f7a4f !important; }
+.step-line { display: none !important; }
+
+/* -------- RADIO (Mood Tiles) -------- */
+.stRadio > div {
+    display: flex !important;
+    flex-wrap: wrap !important;
+    gap: 1rem !important;
+    justify-content: center !important;
+    margin-bottom: 2rem !important;
+}
+.stRadio > div > label {
+    background: var(--stone-light) !important;
+    border: 2px solid var(--stone-dark) !important;
+    border-radius: var(--radius-sm) !important;
+    padding: 1rem 1.5rem !important;
+    font-weight: 500 !important;
+    color: var(--text-primary) !important;
+    transition: var(--transition) !important;
+    cursor: pointer !important;
+    box-shadow: inset 0 2px 4px rgba(255,255,255,0.3), 0 4px 8px rgba(0,0,0,0.15) !important;
+    background-image: repeating-linear-gradient(45deg, rgba(255,255,255,0.05) 0px, rgba(255,255,255,0.05) 2px, transparent 2px, transparent 4px) !important;
+    font-family: 'Inter', sans-serif !important;
+    font-size: 0.95rem !important;
+    min-width: 120px !important;
+    text-align: center !important;
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: center !important;
+    gap: 0.5rem !important;
+}
+.stRadio > div > label:hover {
+    border-color: var(--copper) !important;
+    transform: translateY(-2px) !important;
+    box-shadow: 0 8px 16px rgba(0,0,0,0.2) !important;
+}
+.stRadio > div > label[data-checked="true"] {
+    background: var(--terracotta) !important;
+    border-color: var(--terracotta-dark) !important;
+    box-shadow: 0 0 0 4px rgba(200,106,74,0.3), inset 0 2px 4px rgba(255,255,255,0.3) !important;
+    color: var(--text-inverse) !important;
+    transform: scale(1.05) !important;
+}
+
+/* -------- SLIDER (Simplified, functional) -------- */
+/* We style the native slider track and thumb – no hiding of important elements */
+.stSlider {
+    margin: 2rem 0 2.5rem 0 !important;
+}
+.stSlider > label {
+    display: none !important; /* hide built-in label, we add custom heading in Python */
+}
+/* The entire slider container */
+.stSlider > div {
+    display: flex !important;
+    align-items: center !important;
+}
+/* The track area – we use the native input's track */
+.stSlider > div > div:first-child {
+    flex: 1 !important;
+    position: relative;
+    height: 40px;
+}
+/* The actual input[type="range"] is inside – we style it directly */
+.stSlider input[type="range"] {
+    width: 100% !important;
+    height: 8px !important;
+    background: linear-gradient(90deg, var(--copper-dark), var(--copper), var(--copper-light)) !important;
+    border-radius: 6px !important;
+    box-shadow: inset 0 2px 4px rgba(0,0,0,0.4), 0 1px 1px rgba(255,255,255,0.2) !important;
+    -webkit-appearance: none !important;
+    appearance: none !important;
+    outline: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+}
+/* The slider thumb (knob) */
+.stSlider input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none !important;
+    appearance: none !important;
+    width: 28px !important;
+    height: 28px !important;
+    background: radial-gradient(circle at 30% 30%, #f0c86a, var(--amber)) !important;
+    border-radius: 50% !important;
+    border: 2px solid var(--copper-dark) !important;
+    box-shadow: 0 0 0 4px rgba(232, 176, 74, 0.2), 0 4px 12px rgba(0,0,0,0.4) !important;
+    cursor: grab !important;
+    transition: var(--transition) !important;
+}
+.stSlider input[type="range"]::-webkit-slider-thumb:hover {
+    transform: scale(1.1) !important;
+    box-shadow: 0 0 0 6px rgba(232,176,74,0.4), 0 8px 20px rgba(0,0,0,0.5) !important;
+}
+.stSlider input[type="range"]::-moz-range-thumb {
+    width: 28px !important;
+    height: 28px !important;
+    background: radial-gradient(circle at 30% 30%, #f0c86a, var(--amber)) !important;
+    border-radius: 50% !important;
+    border: 2px solid var(--copper-dark) !important;
+    box-shadow: 0 0 0 4px rgba(232, 176, 74, 0.2), 0 4px 12px rgba(0,0,0,0.4) !important;
+    cursor: grab !important;
+}
+/* The displayed value (right side) */
+.stSlider > div > div:last-child {
+    margin-left: 1.2rem !important;
+    font-family: 'JetBrains Mono', monospace !important;
+    font-weight: 600 !important;
+    color: var(--terracotta-dark) !important;
+    font-size: 1.1rem !important;
+    min-width: 45px;
+    text-align: center;
+}
+
+/* -------- BUTTONS -------- */
+.stButton > button {
+    background: var(--terracotta) !important;
+    color: var(--text-inverse) !important;
+    border: 2px solid var(--terracotta-dark) !important;
+    border-radius: var(--radius-pill) !important;
+    padding: 0.8rem 2.5rem !important;
+    font-family: 'Playfair Display', serif !important;
+    font-weight: 700 !important;
+    font-size: 1.1rem !important;
+    letter-spacing: 0.03em !important;
+    transition: var(--transition) !important;
+    box-shadow: 0 4px 0 var(--terracotta-dark), 0 8px 20px rgba(200,106,74,0.3) !important;
+    width: auto !important;
+    display: inline-block !important;
+}
+.stButton > button:hover {
+    transform: translateY(-3px) !important;
+    background: var(--terracotta-light) !important;
+    box-shadow: 0 6px 0 var(--terracotta-dark), 0 14px 32px rgba(200,106,74,0.4) !important;
+}
+.stButton > button:active {
+    transform: translateY(2px) !important;
+    box-shadow: 0 2px 0 var(--terracotta-dark), 0 6px 16px rgba(200,106,74,0.3) !important;
+}
+.stButton > button:disabled {
+    opacity: 0.5 !important;
+    filter: grayscale(0.3) !important;
+    transform: none !important;
+    box-shadow: 0 2px 0 var(--terracotta-dark) !important;
+}
+
+/* Primary button (Find Recipes) – brass */
+.stButton > button[data-testid="baseButton-primary"] {
+    background: var(--brass) !important;
+    border-color: var(--brass-dark) !important;
+    box-shadow: 0 4px 0 var(--brass-dark), 0 8px 20px rgba(181, 166, 66, 0.3) !important;
+}
+.stButton > button[data-testid="baseButton-primary"]:hover {
+    background: var(--brass-light) !important;
+    box-shadow: 0 6px 0 var(--brass-dark), 0 14px 32px rgba(181, 166, 66, 0.4) !important;
+}
+.stButton > button[data-testid="baseButton-primary"]::before {
+    content: '🔍 ';
+    font-size: 1rem;
+    margin-right: 0.4rem;
+}
+
+/* -------- MULTISELECT (Ingredients) -------- */
+.stMultiSelect {
+    margin-bottom: 1.5rem !important;
+}
+.stMultiSelect > div {
+    background: var(--copper-dark) !important;
+    border: 2px solid var(--copper) !important;
+    border-radius: var(--radius-sm) !important;
+    padding: 0.3rem !important;
+    box-shadow: inset 0 2px 8px rgba(0,0,0,0.3) !important;
+}
+.stMultiSelect > div > div {
+    background: var(--glass-frost) !important;
+    backdrop-filter: blur(6px) !important;
+    border-radius: 4px !important;
+    padding: 0.5rem !important;
+    color: var(--text-primary) !important;
+}
+.stMultiSelect > div > div > div > span {
+    background: var(--wood-medium) !important;
+    color: #f5ede4 !important;
+    border-radius: 4px !important;
+    padding: 0.2rem 0.7rem !important;
+    margin: 0.1rem !important;
+    font-weight: 500;
+}
+
+/* -------- RECIPE CARD -------- */
+.recipe-card {
+    background: rgba(255,255,255,0.6) !important;
+    backdrop-filter: blur(8px) !important;
+    border: 1px solid rgba(255,255,255,0.4) !important;
+    border-radius: var(--radius-card) !important;
+    padding: 1.5rem 2rem 1.5rem 2.5rem !important;
+    margin-bottom: 1.5rem !important;
+    box-shadow: var(--shadow-soft), inset 0 1px 0 rgba(255,255,255,0.8) !important;
+    transition: var(--transition) !important;
+    position: relative;
+}
+.recipe-card::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 8px;
+    background: linear-gradient(180deg, var(--brass), var(--copper)) !important;
+    border-radius: var(--radius-card) 0 0 var(--radius-card);
+}
+.recipe-card:hover {
+    transform: translateY(-4px) !important;
+    box-shadow: var(--shadow-heavy), inset 0 1px 0 rgba(255,255,255,0.9) !important;
+    border-color: var(--brass-light) !important;
+}
+.recipe-card .stImage img {
+    border-radius: var(--radius-sm) !important;
+    border: 4px solid var(--brass) !important;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.2) !important;
+    transition: var(--transition) !important;
+    width: 100% !important;
+    height: 200px !important;
+    object-fit: cover !important;
+    margin: 1rem 0 !important;
+}
+.recipe-card .stImage img:hover {
+    transform: scale(1.02) !important;
+    box-shadow: 0 12px 32px rgba(0,0,0,0.3) !important;
+}
+
+/* -------- INGREDIENT TAGS -------- */
+.ingredient-tag {
+    display: inline-block !important;
+    background: linear-gradient(135deg, var(--wood-light), var(--wood-medium)) !important;
+    border: 1px solid var(--wood-dark) !important;
+    border-radius: 4px 12px 4px 12px !important;
+    padding: 0.3rem 1rem 0.35rem 1rem !important;
+    margin: 0.25rem 0.3rem !important;
+    font-size: 0.85rem !important;
+    font-weight: 500 !important;
+    color: #f5ede4 !important;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.6) !important;
+    box-shadow: 0 3px 6px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.15) !important;
+    transition: var(--transition) !important;
+    font-family: 'Inter', sans-serif !important;
+    letter-spacing: 0.02em;
+    animation: popIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+@keyframes popIn {
+    0% { transform: scale(0.8); opacity: 0; }
+    100% { transform: scale(1); opacity: 1; }
+}
+.ingredient-tag:hover {
+    transform: translateY(-2px) rotate(-1deg) !important;
+    box-shadow: 0 6px 12px rgba(0,0,0,0.4) !important;
+}
+
+/* -------- ALERTS / INFO -------- */
+.stWarning {
+    background: rgba(232, 176, 74, 0.15) !important;
+    border-left: 6px solid var(--amber) !important;
+    border-radius: var(--radius-sm) !important;
+    box-shadow: 0 0 0 1px var(--amber-glass), var(--shadow-soft) !important;
+    color: var(--text-primary) !important;
+    padding: 1rem 1.5rem !important;
+    display: flex !important;
+    align-items: center !important;
+    gap: 1rem !important;
+    font-weight: 500 !important;
+}
+.stWarning .stAlertIcon { color: var(--amber) !important; font-size: 1.5rem !important; }
+
+.stInfo, .stSuccess {
+    background: rgba(100, 150, 200, 0.08) !important;
+    backdrop-filter: blur(8px) !important;
+    border: 1px solid rgba(100, 150, 200, 0.2) !important;
+    border-radius: var(--radius-sm) !important;
+    box-shadow: 0 0 0 2px var(--brass), 0 8px 24px rgba(0,0,0,0.1) !important;
+    color: var(--text-primary) !important;
+    padding: 1rem 1.5rem !important;
+    display: flex !important;
+    align-items: center !important;
+    gap: 1rem !important;
+}
+.stInfo .stAlertIcon, .stSuccess .stAlertIcon { color: var(--brass-dark) !important; font-size: 1.5rem !important; }
+
+/* -------- EXPANDER / DATAFRAME / CHARTS -------- */
+.streamlit-expanderHeader {
+    background: rgba(255,255,255,0.3) !important;
+    backdrop-filter: blur(4px) !important;
+    border-radius: var(--radius-sm) !important;
+    border: 1px solid rgba(255,255,255,0.2) !important;
+    color: var(--text-primary) !important;
+    font-weight: 600 !important;
+    transition: var(--transition) !important;
+}
+.streamlit-expanderHeader:hover {
+    border-color: var(--brass) !important;
+    background: rgba(255,255,255,0.5) !important;
+}
+.streamlit-expanderContent {
+    background: rgba(255,255,255,0.2) !important;
+    backdrop-filter: blur(4px) !important;
+    border-radius: 0 0 var(--radius-sm) var(--radius-sm) !important;
+    border: 1px solid rgba(255,255,255,0.1) !important;
+    border-top: none !important;
+    color: var(--text-primary) !important;
+}
+
+.stDataFrame {
+    background: rgba(255,255,255,0.4) !important;
+    backdrop-filter: blur(4px) !important;
+    border-radius: var(--radius-sm) !important;
+    border: 1px solid rgba(255,255,255,0.2) !important;
+}
+.stDataFrame thead tr th {
+    background: rgba(255,255,255,0.3) !important;
+    color: var(--text-primary) !important;
+    border-bottom: 2px solid var(--copper) !important;
+}
+.stDataFrame tbody tr:hover { background: rgba(255,255,255,0.2) !important; }
+
+.stBarChart, .stPyplot {
+    background: rgba(255,255,255,0.3) !important;
+    backdrop-filter: blur(4px) !important;
+    border-radius: var(--radius-sm) !important;
+    padding: 0.5rem !important;
+    border: 1px solid rgba(255,255,255,0.2) !important;
+    box-shadow: var(--shadow-soft) !important;
+}
+
+/* -------- UTILITIES -------- */
+.text-gold { color: var(--brass) !important; }
+.text-terracotta { color: var(--terracotta) !important; }
+.text-copper { color: var(--copper) !important; }
+.text-wood { color: var(--wood-medium) !important; }
+.text-muted { color: var(--text-muted) !important; }
+
+/* -------- RESPONSIVE -------- */
+@media (max-width: 640px) {
+    h1, .stMarkdown h1 { font-size: 2rem !important; }
+    .step-circle { width: 38px !important; height: 38px !important; font-size: 0.85rem !important; }
+    .step-container::before { top: 18px; }
+    .stRadio > div > label { padding: 0.5rem 1rem !important; font-size: 0.8rem !important; min-width: 80px !important; }
+    .stButton > button { padding: 0.5rem 1.2rem !important; font-size: 0.95rem !important; }
+    .recipe-card { padding: 1.25rem !important; }
+    .recipe-card .stImage img { height: 140px !important; }
+}
+
+/* -------- SCROLLBAR -------- */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--paper-dark); }
+::-webkit-scrollbar-thumb { background: var(--copper); border-radius: 6px; }
+::-webkit-scrollbar-thumb:hover { background: var(--copper-light); }
