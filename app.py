@@ -147,6 +147,117 @@ def match_comment(pct):
     else:
         return "هذه الوصفة تحتاج مكونات كثيرة غير متوفرة لديك، فهي غير موصى بها حالياً."
 
+# ------------------------- HELPER FUNCTIONS (AI & WIZARD) ------------------
+def extract_json_array(raw_text: str):
+    raw_text = (raw_text or "").strip()
+    try:
+        parsed = json.loads(raw_text)
+        return parsed if isinstance(parsed, list) else None
+    except json.JSONDecodeError:
+        start = raw_text.find('[')
+        end = raw_text.rfind(']') + 1
+        if start == -1 or end == 0:
+            return None
+        try:
+            parsed = json.loads(raw_text[start:end])
+            return parsed if isinstance(parsed, list) else None
+        except json.JSONDecodeError:
+            return None
+
+def score_and_comment_candidates(df: pd.DataFrame, user_items: list) -> pd.DataFrame:
+    if df.empty:
+        return df.copy()
+    df = df.copy()
+    user_meaningful = [i for i in user_items if i not in PANTRY_ITEMS]
+
+    def _recipe_meaningful(row):
+        recipe_ings = re.split(r'[،,]', str(row["ingredients_Items"]))
+        return [i.strip() for i in recipe_ings if i.strip() not in PANTRY_ITEMS]
+
+    def _score(row):
+        return len(set(user_meaningful) & set(_recipe_meaningful(row)))
+
+    def _comment(row):
+        if not user_meaningful:
+            return "لم تختر أي مكونات جوهرية."
+        matched = set(user_meaningful) & set(_recipe_meaningful(row))
+        pct = len(matched) / len(user_meaningful) * 100
+        return match_comment(pct)
+
+    df["score"] = df.apply(_score, axis=1)
+    df["comment"] = df.apply(_comment, axis=1)
+    return df.sort_values("score", ascending=False)
+
+def call_ai_json(system_prompt: str, user_prompt: str, max_tokens: int, temperature: float):
+    try:
+        response = client.chat.completions.create(
+            model="deepseek/deepseek-chat",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            max_tokens=max_tokens,
+            temperature=temperature,
+            timeout=30,
+        )
+    except Exception as e:
+        return None, f"تعذّر الاتصال بالذكاء الاصطناعي: {e}"
+    raw_output = response.choices[0].message.content or ""
+    parsed = extract_json_array(raw_output)
+    if parsed is None:
+        return None, "لم يتمكن الذكاء الاصطناعي من إرجاع بيانات صالحة. حاول مرة أخرى."
+    return parsed, None
+
+def get_candidate_ingredient_pool(candidates: pd.DataFrame) -> list:
+    pool = set()
+    for ings_str in candidates.get("ingredients_Items", []):
+        for ing in re.split(r'[،,]', str(ings_str)):
+            ing = ing.strip()
+            if ing and ing not in PANTRY_ITEMS:
+                pool.add(ing)
+    return sorted(pool)
+
+def filter_excluded_suggestions(suggestions: list, hard_exclude: list) -> list:
+    if not hard_exclude:
+        return suggestions
+    excluded_norm = [e.strip() for e in hard_exclude if e and e.strip()]
+    if not excluded_norm:
+        return suggestions
+
+    def _has_excluded(sug):
+        ings = sug.get("ingredients", []) or []
+        for ing in ings:
+            ing = str(ing).strip()
+            for excl in excluded_norm:
+                if excl and (excl in ing or ing in excl):
+                    return True
+        return False
+
+    return [s for s in suggestions if not _has_excluded(s)]
+
+def build_hard_constraints_from_answers(questions: list, answers: dict):
+    hard_exclude, confirmed = [], []
+    for i, ans in answers.items():
+        q = questions[i]
+        if q.get("type") == "ingredient" and q.get("ingredient_name"):
+            if str(ans).strip() == "لا":
+                hard_exclude.append(q["ingredient_name"])
+            elif str(ans).strip() == "نعم":
+                confirmed.append(q["ingredient_name"])
+    return hard_exclude, confirmed
+
+def ensure_five_results(results: pd.DataFrame, candidates: pd.DataFrame, user_items: list) -> pd.DataFrame:
+    if len(results) >= 5 or candidates.empty:
+        return results
+    used_ids = set(results["recipe_Id"].astype(str))
+    remaining = candidates[~candidates["recipe_Id"].astype(str).isin(used_ids)]
+    if remaining.empty:
+        return results
+    remaining_scored = score_and_comment_candidates(remaining, user_items)
+    needed = 5 - len(results)
+    extra = remaining_scored.head(needed)
+    return pd.concat([results, extra], ignore_index=True)
+
 # ------------------------- SESSION STATE ----------------------------------
 if "stage" not in st.session_state:
     st.session_state.stage = "meal_type"
@@ -171,11 +282,11 @@ if "_subs" not in st.session_state:
 if "_shopping_list" not in st.session_state:
     st.session_state._shopping_list = []
 
-# ========== NEW SESSION STATE FOR WIZARD ==========
+# WIZARD state
 if "wizard_active" not in st.session_state:
     st.session_state.wizard_active = False
 if "wizard_step" not in st.session_state:
-    st.session_state.wizard_step = 0  # 0=inactive, 1=questions, 2=answers, 3=results
+    st.session_state.wizard_step = 0
 if "wizard_questions" not in st.session_state:
     st.session_state.wizard_questions = []
 if "wizard_answers" not in st.session_state:
@@ -279,28 +390,20 @@ elif st.session_state.stage == "ingredients":
         default=[],
         label_visibility="collapsed",
     )
+
+    user_items = [INGREDIENT_MAP[label] for label in checked_labels]
+
     if len(checked_labels) > MAX_INGREDIENT_SELECTIONS:
         st.session_state.error_msg = f"⚠️ يرجى اختيار {MAX_INGREDIENT_SELECTIONS} مكونات كحد أقصى."
+    elif len(user_items) < 3:
+        st.session_state.error_msg = "⚠️ يرجى اختيار 3 مكونات على الأقل."
     else:
         st.session_state.error_msg = ""
+
     st.caption(f"📊 {ingredient_count_text(len(checked_labels))}")
 
-    # Developer debug (اختياري)
-    # with st.expander("🔧 أدوات المطور"):
-    #     st.caption(f"بعد تصفية الوجبة والوقت: {st.session_state._debug_count} وصفة")
-    #     debug_df = st.session_state.filtered[["recipe_Id", "recipe_Nme", "ingredients_Items", "meal_Type", "max_Time"]]
-    #     st.dataframe(debug_df, use_container_width=True)
-
     col1, col2 = st.columns(2)
-    with col1:  # العمود الأيمن – زر البحث الأساسي
-        user_items = [INGREDIENT_MAP[label] for label in checked_labels]
-        if len(user_items) < 3:
-            st.session_state.error_msg = "⚠️ يرجى اختيار 3 مكونات على الأقل."
-        elif len(checked_labels) > MAX_INGREDIENT_SELECTIONS:
-            st.session_state.error_msg = f"⚠️ يرجى اختيار {MAX_INGREDIENT_SELECTIONS} مكونات كحد أقصى."
-        else:
-            st.session_state.error_msg = ""
-
+    with col1:
         if st.button("🔍 ابحث عن وصفات", disabled=bool(st.session_state.error_msg), use_container_width=True):
             candidates = st.session_state.filtered
             if candidates.empty:
@@ -310,147 +413,77 @@ elif st.session_state.stage == "ingredients":
             st.session_state._last_user_items = user_items
 
             with st.spinner("🤖 جاري البحث عن أفضل الوصفات..."):
-                try:
-                    selected_type = st.session_state.selected_type
-                    max_time = st.session_state.max_time
+                selected_type = st.session_state.selected_type
+                max_time = st.session_state.max_time
 
-                    recipes_info = candidates[["recipe_Id", "recipe_Nme", "ingredients_Items", "meal_Type", "max_Time"]].to_dict(orient="records")
-                    recipes_json = json.dumps(recipes_info, indent=2, ensure_ascii=False)
+                recipes_info = candidates[
+                    ["recipe_Id", "recipe_Nme", "ingredients_Items", "meal_Type", "max_Time"]
+                ].to_dict(orient="records")
+                recipes_json = json.dumps(recipes_info, indent=2, ensure_ascii=False)
 
-                    system_prompt = (
-    "You are an empathetic, smart culinary assistant. Your primary goal is to help a user who is confused about what to cook based on their available ingredients. "
-    "You will receive a list of candidate recipes (already filtered by meal type and time) and the user's available ingredients.\n\n"
-    "Your task is to select matching recipes from the candidates, rank them, and provide helpful, encouraging comments in Arabic.\n\n"
-    "Follow these strict rules:\n"
-    "1. **Hero Ingredient Analysis & Strict Matching**: Identify the 'hero' core ingredient of each recipe (e.g., Chicken in Kabsa, Ful in Ful Medames, Eggs in Shakshuka). "
-    "The user **MUST** possess this hero ingredient in their provided ingredients list.\n"
-    "2. **Zero Tolerance for Missing Hero Ingredients**: If the user is missing the hero ingredient, REJECT the recipe entirely. "
-    "**DO NOT** suggest the recipe and **DO NOT** suggest substitutes for a missing hero ingredient (e.g., never suggest Ful if they don't have Ful, and never say 'use lentils instead'). If they don't have the hero ingredient, the recipe is invalid.\n"
-    "3. **Ignore Staples for Matching**: Salt, pepper, oil, garlic, onion, lemon juice, and water are auxiliary staples. Do not count them as hero ingredients.\n"
-    "4. **Smart Ranking & Flexible Count**: Rank the selected recipes from most matching to least matching. "
-    "**IMPORTANT**: Return a MAXIMUM of 5 recipes. If only 1, 2, or 3 recipes strictly match the criteria (having the hero ingredient), return *only* those. Do not force 5 recipes by including invalid ones.\n"
-    "5. **Empathetic Arabic Comments**: For each valid selected recipe, write a warm, encouraging comment in Arabic. Use natural, grammatically correct Modern Standard Arabic or a warm, widely understood colloquial tone — avoid awkward literal phrasing. Acknowledge what they have, explain why it's a logical choice, and suggest simple alternatives *only* for missing non-hero ingredients (like spices or secondary toppings).\n\n"
-    "OUTPUT FORMAT:\n"
-    "You must return ONLY a raw JSON array of objects. Do not wrap the JSON in markdown blocks (e.g., do not use ```json). Do not add any conversational text before or after the JSON.\n"
-    "Each object must have strictly two keys:\n"
-    "- 'recipe_Id': (integer) the ID of the recipe.\n"
-    "- 'comment': (string) your empathetic Arabic comment.\n\n"
-    "Example Output:\n"
-    "مهم جدا فكرة وجود المكون الاساسي لن لم يكن موجوده لا تقترح الوصفة ابدا. مثال: إذا لم يكن لديك الدجاج، لا تقترح الكبسة ولا تقول استخدم العدس بدلا من الدجاج.  لكن بناء على نوع الوجبة التي اختارها المستخدم مثلا فطور غداء او عشاء قدم الاقتراحات على اساس انهك تعطي له افكار لوجبات يمكن ان يحضرها بناء على وجود مكونات قريبة من المكونات التي لديه مثلا عرفت ان المستخدم يريد وجبة فطور لديه بيض و زيت اقترح عليه الشكشوكة مثلا ولكن لا تقترح عليه سندويشه فلافل لانها ليس لها علاقة بالمكونات وبافكار انك تعطيه وصفات قريبة من المكونات التي لديه. مثال على مخرجاتك يجب ان تكون هكذا"
-    '[{"recipe_Id": 12, "comment": "خيار ممتاز! تتوفر لديك الدجاج والأرز، وهما أساس الكبسة. ينقصك فقط قليل من البهارات ويمكنك استبدالها بما هو متوفر لديك. بالتوفيق في تحضيرها!"}]'
-)
-                    user_prompt = (
-                        f"اختار المستخدم نوع الوجبة: {selected_type}. "
-                        f"الحد الأقصى للوقت: {max_time} دقيقة. "
-                        f"المكونات المتوفرة لدى المستخدم: {user_items}. "
-                        f"إليك الوصفات المرشحة (كل وصفة تحتوي على المعرف، الاسم، المكونات، نوع الوجبة، والوقت الأقصى):\n\n{recipes_json}"
-                    )
+                system_prompt = (
+                    "You are an empathetic, smart culinary assistant. Your primary goal is to help a user who is confused about what to cook based on their available ingredients. "
+                    "You will receive a list of candidate recipes (already filtered by meal type and time) and the user's available ingredients.\n\n"
+                    "Your task is to select matching recipes from the candidates, rank them, and provide helpful, encouraging comments in Arabic.\n\n"
+                    "Follow these strict rules:\n"
+                    "1. **Hero Ingredient Analysis & Strict Matching**: Identify the 'hero' core ingredient of each recipe (e.g., Chicken in Kabsa, Ful in Ful Medames, Eggs in Shakshuka). "
+                    "The user **MUST** possess this hero ingredient in their provided ingredients list.\n"
+                    "2. **Zero Tolerance for Missing Hero Ingredients**: If the user is missing the hero ingredient, REJECT the recipe entirely. "
+                    "**DO NOT** suggest the recipe and **DO NOT** suggest substitutes for a missing hero ingredient (e.g., never suggest Ful if they don't have Ful, and never say 'use lentils instead'). If they don't have the hero ingredient, the recipe is invalid.\n"
+                    "3. **Ignore Staples for Matching**: Salt, pepper, oil, garlic, onion, lemon juice, and water are auxiliary staples. Do not count them as hero ingredients.\n"
+                    "4. **Smart Ranking & Flexible Count**: Rank the selected recipes from most matching to least matching. "
+                    "**IMPORTANT**: Return a MAXIMUM of 5 recipes. If only 1, 2, or 3 recipes strictly match the criteria (having the hero ingredient), return *only* those. Do not force 5 recipes by including invalid ones.\n"
+                    "5. **Empathetic Arabic Comments**: For each valid selected recipe, write a warm, encouraging comment in Arabic. Use natural, grammatically correct Modern Standard Arabic or a warm, widely understood colloquial tone — avoid awkward literal phrasing. Acknowledge what they have, explain why it's a logical choice, and suggest simple alternatives *only* for missing non-hero ingredients (like spices or secondary toppings).\n\n"
+                    "OUTPUT FORMAT:\n"
+                    "You must return ONLY a raw JSON array of objects. Do not wrap the JSON in markdown blocks (e.g., do not use ```json). Do not add any conversational text before or after the JSON.\n"
+                    "Each object must have strictly two keys:\n"
+                    "- 'recipe_Id': (integer) the ID of the recipe.\n"
+                    "- 'comment': (string) your empathetic Arabic comment.\n\n"
+                    "Example Output:\n"
+                    '[{"recipe_Id": 12, "comment": "خيار ممتاز! تتوفر لديك الدجاج والأرز، وهما أساس الكبسة. ينقصك فقط قليل من البهارات ويمكنك استبدالها بما هو متوفر لديك. بالتوفيق في تحضيرها!"}]'
+                )
+                user_prompt = (
+                    f"اختار المستخدم نوع الوجبة: {selected_type}. "
+                    f"الحد الأقصى للوقت: {max_time} دقيقة. "
+                    f"المكونات المتوفرة لدى المستخدم: {user_items}. "
+                    f"إليك الوصفات المرشحة (كل وصفة تحتوي على المعرف، الاسم، المكونات، نوع الوجبة، والوقت الأقصى):\n\n{recipes_json}"
+                )
 
-                    response = client.chat.completions.create(
-                        model="deepseek/deepseek-chat",
-                        messages=[
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": user_prompt}
-                        ],
-                        max_tokens=600,
-                        temperature=0.3,
-                    )
+                parsed, error = call_ai_json(system_prompt, user_prompt, max_tokens=600, temperature=0.3)
 
-                    ai_output = response.choices[0].message.content.strip()
-
-                    # Parse AI response
-                    ai_items = []
-                    try:
-                        parsed = json.loads(ai_output)
-                        if isinstance(parsed, list):
-                            ai_items = [{"recipe_Id": str(item["recipe_Id"]), "comment": item["comment"]}
-                                        for item in parsed if "recipe_Id" in item and "comment" in item]
-                    except json.JSONDecodeError:
-                        start = ai_output.find('[')
-                        end = ai_output.rfind(']') + 1
-                        if start != -1 and end != -1:
-                            try:
-                                parsed = json.loads(ai_output[start:end])
-                                ai_items = [{"recipe_Id": str(item["recipe_Id"]), "comment": item["comment"]}
-                                            for item in parsed if "recipe_Id" in item and "comment" in item]
-                            except Exception:
-                                ai_items = []
-
+                results = pd.DataFrame()
+                if parsed:
+                    ai_items = [
+                        {"recipe_Id": str(item["recipe_Id"]), "comment": item["comment"]}
+                        for item in parsed
+                        if "recipe_Id" in item and "comment" in item
+                    ]
                     valid_ids = set(candidates["recipe_Id"].astype(str))
-                    if ai_items:
-                        filtered_items = [item for item in ai_items if item["recipe_Id"] in valid_ids]
-                        if filtered_items:
-                            top_ids = [item["recipe_Id"] for item in filtered_items]
-                            comment_map = {item["recipe_Id"]: item["comment"] for item in filtered_items}
-                            results = candidates[candidates["recipe_Id"].astype(str).isin(top_ids)]
-                            rank_map = {id: i for i, id in enumerate(top_ids)}
-                            results = results.copy()
-                            results["rank"] = results["recipe_Id"].astype(str).map(rank_map)
-                            results = results.sort_values("rank").drop(columns=["rank"])
-                            results["comment"] = results["recipe_Id"].astype(str).map(comment_map)
-                        else:
-                            results = pd.DataFrame()
+                    filtered_items = [item for item in ai_items if item["recipe_Id"] in valid_ids]
+                    if filtered_items:
+                        top_ids = [item["recipe_Id"] for item in filtered_items]
+                        comment_map = {item["recipe_Id"]: item["comment"] for item in filtered_items}
+                        results = candidates[candidates["recipe_Id"].astype(str).isin(top_ids)].copy()
+                        rank_map = {rid: i for i, rid in enumerate(top_ids)}
+                        results["rank"] = results["recipe_Id"].astype(str).map(rank_map)
+                        results = results.sort_values("rank").drop(columns=["rank"])
+                        results["comment"] = results["recipe_Id"].astype(str).map(comment_map)
+
+                if results.empty:
+                    if error:
+                        st.warning(f"🤔 {error} إليك بعض الاقتراحات بناءً على مكوناتك بدلاً من ذلك.")
                     else:
-                        results = pd.DataFrame()
-
-                    # Fallback if AI returns nothing
-                    if results.empty:
                         st.warning("🤔 لم يجد الذكاء الاصطناعي تطابقاً كاملاً، ولكن إليك بعض الاقتراحات بناءً على مكوناتك.")
-                        user_meaningful = [i for i in user_items if i not in PANTRY_ITEMS]
-                        def simple_score(row):
-                            recipe_ings = re.split(r'[،,]', str(row["ingredients_Items"]))
-                            recipe_meaningful = [i.strip() for i in recipe_ings if i.strip() not in PANTRY_ITEMS]
-                            return len(set(user_meaningful) & set(recipe_meaningful))
-                        candidates = candidates.copy()
-                        candidates["score"] = candidates.apply(simple_score, axis=1)
-                        candidates = candidates.sort_values("score", ascending=False)
-                        def gen_comment(row):
-                            recipe_ings = re.split(r'[،,]', str(row["ingredients_Items"]))
-                            meaningful = [i for i in user_items if i not in PANTRY_ITEMS]
-                            matched = set(meaningful) & set(recipe_ings)
-                            if not meaningful:
-                                return "لم تختر أي مكونات جوهرية."
-                            pct = len(matched) / len(meaningful) * 100
-                            return match_comment(pct)
-                        candidates["comment"] = candidates.apply(gen_comment, axis=1)
-                        results = candidates.head(5).copy()
+                    results = score_and_comment_candidates(candidates, user_items).head(5)
 
-                    # Ensure exactly 5
-                    if len(results) < 5 and not candidates.empty:
-                        used_ids = set(results["recipe_Id"].astype(str))
-                        remaining = candidates[~candidates["recipe_Id"].astype(str).isin(used_ids)]
-                        if not remaining.empty:
-                            user_meaningful = [i for i in user_items if i not in PANTRY_ITEMS]
-                            def simple_score(row):
-                                recipe_ings = re.split(r'[،,]', str(row["ingredients_Items"]))
-                                recipe_meaningful = [i.strip() for i in recipe_ings if i.strip() not in PANTRY_ITEMS]
-                                return len(set(user_meaningful) & set(recipe_meaningful))
-                            remaining = remaining.copy()
-                            remaining["score"] = remaining.apply(simple_score, axis=1)
-                            remaining = remaining.sort_values("score", ascending=False)
-                            needed = 5 - len(results)
-                            extra = remaining.head(needed)
-                            def gen_comment(row):
-                                recipe_ings = re.split(r'[،,]', str(row["ingredients_Items"]))
-                                meaningful = [i for i in user_items if i not in PANTRY_ITEMS]
-                                matched = set(meaningful) & set(recipe_ings)
-                                if not meaningful:
-                                    return "لم تختر أي مكونات جوهرية."
-                                pct = len(matched) / len(meaningful) * 100
-                                return match_comment(pct)
-                            extra["comment"] = extra.apply(gen_comment, axis=1)
-                            results = pd.concat([results, extra], ignore_index=True)
+                results = ensure_five_results(results, candidates, user_items)
 
-                    st.session_state.results = results
-                    st.session_state.stage = "results"
-                    st.balloons()
-                    st.rerun()
+                st.session_state.results = results
+                st.session_state.stage = "results"
+                st.balloons()
+                st.rerun()
 
-                except Exception as e:
-                    st.error(f"حدث خطأ أثناء الاتصال بالذكاء الاصطناعي: {e}. يرجى المحاولة مرة أخرى أو تعديل المدخلات.")
-                    st.stop()
-
-    with col2:  # العمود الأيسر – زر الرجوع
+    with col2:
         if st.button("⬅ رجوع", use_container_width=True, key="back_ingredients"):
             st.session_state.stage = "meal_type"
             st.rerun()
@@ -459,14 +492,11 @@ elif st.session_state.stage == "ingredients":
         st.warning(st.session_state.error_msg)
 
     # =================================================================
-    # NEW: WIZARD (AI Assistant) – MOVED TO BOTTOM OF THE PAGE
+    # WIZARD (AI Assistant) – IMPROVED VERSION
     # =================================================================
     st.markdown("---")
     st.markdown("### 🤔 محتارة؟ دعي الذكاء الاصطناعي يساعدك في الاختيار!")
-    st.caption("سيسألك الذكاء الاصطناعي بعض الأسئلة ليقدم لك اقتراحات مخصصة بناءً على اختياراتك.")
-
-    # Capture user items for the wizard
-    user_items = [INGREDIENT_MAP[label] for label in checked_labels] if checked_labels else []
+    st.caption("سيسألك الذكاء الاصطناعي أسئلة ذكية عن تفضيلاتك ليقدم لك اقتراحات مخصصة.")
 
     if not st.session_state.wizard_active:
         if st.button("✨ اسأليني وأنا أختار لك", use_container_width=True):
@@ -474,53 +504,47 @@ elif st.session_state.stage == "ingredients":
             st.session_state.wizard_step = 1
             st.rerun()
     else:
-        # --- Wizard Step 1: Generate Questions ---
+        # --- Wizard Step 1: Generate Questions (SMARTER) ---
         if st.session_state.wizard_step == 1:
-            with st.spinner("الذكاء الاصطناعي يجهز لك أسئلة مخصصة..."):
-                try:
-                    meal_type = st.session_state.selected_type
-                    max_time = st.session_state.max_time
+            with st.spinner("الذكاء الاصطناعي يجهز لك أسئلة ذكية..."):
+                meal_type = st.session_state.selected_type
+                max_time = st.session_state.max_time
+                user_items_text = f"المستخدم لديه بالفعل هذه المكونات: {', '.join(user_items)}. " if user_items else "المستخدم لم يحدد أي مكونات بعد. "
 
-                    # Build the prompt with user items if they exist
-                    user_items_text = ""
-                    if user_items:
-                        user_items_text = f"المستخدم لديه بالفعل هذه المكونات: {', '.join(user_items)}. "
+                candidate_pool = st.session_state.filtered
+                ingredient_pool = get_candidate_ingredient_pool(candidate_pool)
+                ingredient_pool = [i for i in ingredient_pool if i not in user_items]
+                pool_text = ', '.join(ingredient_pool[:40]) if ingredient_pool else "غير متوفرة"
 
-                    question_prompt = (
-                        f"المستخدم يريد تحضير وجبة من نوع '{meal_type}'، ولديه وقت أقصاه {max_time} دقيقة. "
-                        f"{user_items_text}"
-                        "هو حائر ولا يعرف ماذا يختار. قم بإنشاء 3 أسئلة إرشادية ذكية ومتنوعة (أسئلة اختيار من متعدد) "
-                        "تساعده في تحديد ما يرغب به. الأسئلة يجب أن تكون حول المكونات المتوفرة (مثل: هل لديك بيض؟) أو التفضيلات (مثل: هل تفضل الحلو أم المالح؟). "
-                        "إذا كان المستخدم قد حدد بعض المكونات بالفعل، حاول أن تكون الأسئلة مكملة لها لتضييق الخيارات."
-                        "قم بإرجاع مصفوفة JSON تحتوي على 3 كائنات، كل كائن يحتوي على 'question' (نص السؤال) و 'options' (مصفوفة خيارات، على الأقل 2 خيار).\n"
-                        "مثال: [{\"question\": \"هل لديك بيض في الثلاجة؟\", \"options\": [\"نعم\", \"لا\"]}, ...]"
-                    )
-                    resp = client.chat.completions.create(
-                        model="deepseek/deepseek-chat",
-                        messages=[
-                            {"role": "system", "content": "أنت خبير طهي يساعد المستخدم الحائر. أجب فقط بصيغة JSON صالحة."},
-                            {"role": "user", "content": question_prompt}
-                        ],
-                        max_tokens=400,
-                        temperature=0.5,
-                    )
-                    output = resp.choices[0].message.content.strip()
-                    start = output.find('[')
-                    end = output.rfind(']') + 1
-                    if start != -1 and end != -1:
-                        st.session_state.wizard_questions = json.loads(output[start:end])
-                        st.session_state.wizard_step = 2
-                        st.rerun()
-                    else:
-                        st.error("تعذّر توليد الأسئلة. يرجى المحاولة مرة أخرى.")
-                        st.session_state.wizard_active = False
-                        st.session_state.wizard_step = 0
-                        st.rerun()
-                except Exception as e:
-                    st.error(f"حدث خطأ: {e}")
+                question_prompt = (
+                    f"المستخدم يريد تحضير وجبة من نوع '{meal_type}'، ولديه وقت أقصاه {max_time} دقيقة. "
+                    f"{user_items_text}\n"
+                    f"هذه هي المكونات المحورية التي تظهر في الوصفات المرشحة: {pool_text}.\n\n"
+                    "هو حائر ولا يعرف ماذا يختار. أنشئ 3-4 أسئلة تساعده يضيّق الخيارات بشكل ذكي، مع التنويع بين:\n"
+                    "1. سؤال واحد على الأكثر عن توفر مكون محوري (اسأل فقط إذا كان هذا المكون يظهر بشكل متكرر ويؤثر بشكل كبير في الاختيارات).\n"
+                    "2. باقي الأسئلة يجب أن تكون عن التفضيلات الشخصية مثل: نوع الطبق (ساخن/بارد، دسم/خفيف، حار/معتدل)، طريقة الطهي (قلي/شوي/غلي)، المكونات المفضلة (خضار/لحوم/حبوب)، أو مستوى الصعوبة.\n"
+                    "3. اجعل الأسئلة محفزة للتفكير، وليس مجرد أسئلة بنعم/لا - قد تكون اختيار من متعدد بثلاثة خيارات أو أكثر.\n"
+                    "4. تجنب الأسئلة التي تحصر المستخدم في خيار ضيق جداً، بل وسّع خياراته.\n\n"
+                    "أعد فقط مصفوفة JSON (بدون أي نص إضافي)، كل عنصر يحتوي على الحقول: "
+                    "'type' (\"ingredient\" أو \"preference\" أو \"style\")، 'question' (نص السؤال)، 'options' (مصفوفة نصوص تحتوي على 2-4 خيارات)، "
+                    "'ingredient_name' (إذا كان type='ingredient'، ضع اسم المكون المطابق تماماً لأحد المكونات في القائمة أعلاه، وإلا اجعلها null).\n"
+                    "مثال:\n"
+                    "[{\"type\": \"style\", \"question\": \"هل تفضل وجبة خفيفة وسريعة أم وجبة دسمة وغنية؟\", \"options\": [\"خفيفة سريعة\", \"دسمة وغنية\"], \"ingredient_name\": null},\n"
+                    "{\"type\": \"preference\", \"question\": \"ما هو نوع الطبق الذي ترغب به؟\", \"options\": [\"مقلي\", \"مشوي\", \"مسلوق\"], \"ingredient_name\": null},\n"
+                    "{\"type\": \"ingredient\", \"question\": \"هل لديك بيض متوفر؟\", \"options\": [\"نعم\", \"لا\"], \"ingredient_name\": \"بيض\"}]"
+                )
+                parsed, error = call_ai_json(
+                    "أنت خبير طهي دقيق يساعد المستخدم الحائر. تلتزم حرفياً بقائمة المكونات المعطاة لك ولا تخترع مكونات. أجب فقط بصيغة JSON صالحة.",
+                    question_prompt, max_tokens=500, temperature=0.4,
+                )
+                if parsed:
+                    st.session_state.wizard_questions = parsed
+                    st.session_state.wizard_step = 2
+                else:
+                    st.error(error or "تعذّر توليد الأسئلة. يرجى المحاولة مرة أخرى.")
                     st.session_state.wizard_active = False
                     st.session_state.wizard_step = 0
-                    st.rerun()
+                st.rerun()
 
         # --- Wizard Step 2: Show Questions ---
         elif st.session_state.wizard_step == 2:
@@ -530,11 +554,8 @@ elif st.session_state.stage == "ingredients":
 
             for i, q in enumerate(questions):
                 answer = st.radio(
-                    q["question"],
-                    options=q["options"],
-                    key=f"wizard_q_{i}",
-                    index=None,
-                    horizontal=True
+                    q["question"], options=q["options"],
+                    key=f"wizard_q_{i}", index=None, horizontal=True,
                 )
                 if answer:
                     answers[i] = answer
@@ -551,55 +572,60 @@ elif st.session_state.stage == "ingredients":
                     st.session_state.wizard_step = 3
                     st.rerun()
 
-        # --- Wizard Step 3: Generate Suggestions ---
+        # --- Wizard Step 3: Generate Suggestions (using preferences) ---
         elif st.session_state.wizard_step == 3:
             with st.spinner("🧠 الذكاء الاصطناعي يفكر في أفضل الخيارات لك..."):
-                try:
-                    meal_type = st.session_state.selected_type
-                    max_time = st.session_state.max_time
-                    answers_text = "\n".join([f"- س: {st.session_state.wizard_questions[i]['question']} ج: {ans}" for i, ans in st.session_state.wizard_answers.items()])
+                meal_type = st.session_state.selected_type
+                max_time = st.session_state.max_time
+                questions = st.session_state.wizard_questions
+                answers = st.session_state.wizard_answers
 
-                    # Build user items text for suggestions
-                    user_items_text = ""
-                    if user_items:
-                        user_items_text = f"المستخدم لديه بالفعل هذه المكونات: {', '.join(user_items)}. "
+                answers_text = "\n".join(
+                    f"- س: {questions[i]['question']} ج: {ans}" for i, ans in answers.items()
+                )
 
-                    suggest_prompt = (
-                        f"المستخدم يريد وجبة '{meal_type}' في {max_time} دقيقة.\n"
-                        f"{user_items_text}"
-                        f"إجاباته على الأسئلة:\n{answers_text}\n\n"
-                        "بناءً على هذه المعلومات، قم بإنشاء 3-5 اقتراحات لوجبات محددة (قد تكون من معرفتك العامة أو من وصفات مشهورة). "
-                        "إذا كان المستخدم قد حدد مكونات، حاول أن تكون الاقتراحات متوافقة معها قدر الإمكان.\n"
-                        "لكل وجبة، اذكر الاسم، قائمة المكونات الأساسية، وتعليقاً قصيراً عن سبب ملاءمتها.\n"
-                        "أعد مصفوفة JSON تحتوي على كائنات، كل كائن يحتوي على: 'name' (اسم الوصفة)، 'ingredients' (مصفوفة نصوص)، 'comment' (تعليق).\n"
-                        "مثال: [{\"name\": \"عجة البيض بالجبنة\", \"ingredients\": [\"بيض\", \"جبنة\", \"زيت\"], \"comment\": \"سريعة ولذيذة، تناسب الفطور\"}]"
-                    )
-                    resp = client.chat.completions.create(
-                        model="deepseek/deepseek-chat",
-                        messages=[
-                            {"role": "system", "content": "أنت خبير طهي مبدع. أجب فقط بصيغة JSON صالحة."},
-                            {"role": "user", "content": suggest_prompt}
-                        ],
-                        max_tokens=600,
-                        temperature=0.7,
-                    )
-                    output = resp.choices[0].message.content.strip()
-                    start = output.find('[')
-                    end = output.rfind(']') + 1
-                    if start != -1 and end != -1:
-                        st.session_state.wizard_suggestions = json.loads(output[start:end])
+                hard_exclude, confirmed = build_hard_constraints_from_answers(questions, answers)
+                available_all = sorted(set(user_items) | set(confirmed))
+
+                user_items_text = f"المكونات المؤكد توفرها لدى المستخدم: {', '.join(available_all)}. " if available_all else ""
+                exclude_text = (
+                    f"مكونات ممنوعة تماماً ولا يملكها المستخدم إطلاقاً: {', '.join(hard_exclude)}. "
+                    if hard_exclude else ""
+                )
+
+                suggest_prompt = (
+                    f"المستخدم يريد وجبة '{meal_type}' في {max_time} دقيقة.\n"
+                    f"{user_items_text}{exclude_text}\n"
+                    f"إجاباته على الأسئلة (تحتوي على تفضيلاته وأسلوب الطبخ المفضل):\n{answers_text}\n\n"
+                    "بناءً على هذه المعلومات، أنشئ 3-5 اقتراحات لوجبات محددة (من معرفتك العامة أو وصفات مشهورة) "
+                    "تتناسب مع تفضيلاته وقيود المكونات المتاحة (والقيود الممنوعة أعلاه).\n\n"
+                    "لكل وجبة، اذكر الاسم، قائمة المكونات الأساسية فقط (بدون staples مثل ملح/فلفل/زيت/ماء)، "
+                    "وتعليقاً قصيراً بالعربية عن سبب ملاءمتها.\n"
+                    "أعد فقط مصفوفة JSON، كل كائن يحتوي على: 'name' (اسم الوصفة)، 'ingredients' (مصفوفة نصوص)، 'comment' (تعليق).\n"
+                    "مثال: [{\"name\": \"عجة البيض بالجبنة\", \"ingredients\": [\"بيض\", \"جبنة\"], \"comment\": \"سريعة ولذيذة، تناسب الفطور\"}]"
+                )
+                parsed, error = call_ai_json(
+                    "أنت خبير طهي مبدع وملتزم بالقيود المعطاة لك حرفياً. أجب فقط بصيغة JSON صالحة.",
+                    suggest_prompt, max_tokens=700, temperature=0.6,
+                )
+
+                if parsed:
+                    safe_suggestions = filter_excluded_suggestions(parsed, hard_exclude)
+                    if safe_suggestions:
+                        st.session_state.wizard_suggestions = safe_suggestions
                         st.session_state.wizard_step = 4
-                        st.rerun()
                     else:
-                        st.error("تعذّر توليد الاقتراحات. حاول مرة أخرى.")
+                        st.warning(
+                            "⚠️ الاقتراحات اللي طلعت كلها تحتاج مكونات ذكرت إنها غير متوفرة لديك. "
+                            "جرّب تجاوب على الأسئلة بشكل مختلف أو ابدأ مساعد جديد."
+                        )
                         st.session_state.wizard_active = False
                         st.session_state.wizard_step = 0
-                        st.rerun()
-                except Exception as e:
-                    st.error(f"حدث خطأ: {e}")
+                else:
+                    st.error(error or "تعذّر توليد الاقتراحات. حاول مرة أخرى.")
                     st.session_state.wizard_active = False
                     st.session_state.wizard_step = 0
-                    st.rerun()
+                st.rerun()
 
         # --- Wizard Step 4: Show Suggestions ---
         elif st.session_state.wizard_step == 4:
@@ -612,7 +638,6 @@ elif st.session_state.stage == "ingredients":
                     st.caption(f"المكونات: {', '.join(sug['ingredients'])}")
                     st.write(f"💬 {sug.get('comment', '')}")
                     if st.button(f"👨‍🍳 اختر هذه ({sug['name']})", key=f"wizard_choose_{idx}"):
-                        # Create a virtual recipe
                         virtual_recipe = {
                             "recipe_Id": f"virtual_{idx}",
                             "recipe_Nme": sug['name'],
@@ -621,14 +646,12 @@ elif st.session_state.stage == "ingredients":
                             "max_Time": st.session_state.max_time,
                             "pics": None,
                             "comment": f"تم اقتراحها بواسطة المساعد الذكي بناءً على اختياراتك: {sug.get('comment', '')}",
-                            "is_virtual": True
+                            "is_virtual": True,
                         }
-                        # If user had selected ingredients, store them for the detail page
                         if user_items:
                             st.session_state._last_user_items = user_items
                         st.session_state.selected_recipe = virtual_recipe
                         st.session_state.stage = "detail"
-                        # Reset wizard state
                         st.session_state.wizard_active = False
                         st.session_state.wizard_step = 0
                         st.rerun()
@@ -694,11 +717,9 @@ elif st.session_state.stage == "results":
             st.markdown("---")
             st.subheader("⏱️ مقارنة أوقات الطهي")
 
-            # ترتيب البيانات تصاعدياً حسب الوقت
             sorted_data = results[["recipe_Nme", "max_Time"]].copy()
             sorted_data = sorted_data.sort_values("max_Time")
 
-            # تدرج لوني مستوحى من ألوان التطبيق (برتقالي)
             cmap = plt.cm.Oranges
             norm = plt.Normalize(vmin=sorted_data["max_Time"].min(), vmax=sorted_data["max_Time"].max())
             colors = [cmap(norm(val)) for val in sorted_data["max_Time"]]
@@ -706,7 +727,6 @@ elif st.session_state.stage == "results":
             fig, ax = plt.subplots(figsize=(8, 5))
             bars = ax.bar(sorted_data["recipe_Nme"], sorted_data["max_Time"], color=colors)
 
-            # إضافة قيم الوقت أعلى الأعمدة
             for bar in bars:
                 height = bar.get_height()
                 ax.annotate(f'{height} دقيقة',
@@ -734,12 +754,9 @@ elif st.session_state.stage == "detail":
     recipe = st.session_state.selected_recipe
     user_items = st.session_state._last_user_items
 
-    # Handle virtual recipes (from wizard)
     is_virtual = recipe.get("is_virtual", False)
     if is_virtual:
         st.info("🍽️ هذه الوصفة تم اقتراحها بواسطة المساعد الذكي، وهي ليست من قاعدة البيانات.")
-        # For virtual recipes, we don't have a pics URL, so we show a placeholder.
-        # Also, we set user_items to empty list if not available.
         if not user_items:
             user_items = []
 
@@ -762,7 +779,6 @@ elif st.session_state.stage == "detail":
 
     st.markdown("---")
 
-    # ---- PIE CHART: جاهزية المكونات (only if we have user_items) ----
     if user_items:
         st.subheader("📊 مدى توفر المكونات")
         recipe_items = [i.strip() for i in re.split(r'[،,]', str(recipe["ingredients_Items"])) if i.strip()]
@@ -922,6 +938,3 @@ elif st.session_state.stage == "done":
     if st.button("⬅ ابحث عن وصفة أخرى"):
         st.session_state.stage = "meal_type"
         st.rerun()
-
-# لتشغيل التطبيق:
-# streamlit run app.py
