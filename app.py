@@ -291,170 +291,6 @@ elif st.session_state.stage == "ingredients":
     #     debug_df = st.session_state.filtered[["recipe_Id", "recipe_Nme", "ingredients_Items", "meal_Type", "max_Time"]]
     #     st.dataframe(debug_df, use_container_width=True)
 
-    # =================================================================
-    # NEW: WIZARD (AI Assistant) – appears as a separate section
-    # =================================================================
-    st.markdown("---")
-    st.markdown("### 🤔 محتارة؟ دعي الذكاء الاصطناعي يساعدك في الاختيار!")
-
-    if not st.session_state.wizard_active:
-        if st.button("✨ اسأليني وأنا أختار لك", use_container_width=True):
-            st.session_state.wizard_active = True
-            st.session_state.wizard_step = 1
-            st.rerun()
-    else:
-        # --- Wizard Step 1: Generate Questions ---
-        if st.session_state.wizard_step == 1:
-            with st.spinner("الذكاء الاصطناعي يجهز لك أسئلة مخصصة..."):
-                try:
-                    meal_type = st.session_state.selected_type
-                    max_time = st.session_state.max_time
-
-                    question_prompt = (
-                        f"المستخدم يريد تحضير وجبة من نوع '{meal_type}'، ولديه وقت أقصاه {max_time} دقيقة. "
-                        "هو حائر ولا يعرف ماذا يختار. قم بإنشاء 3 أسئلة إرشادية ذكية ومتنوعة (أسئلة اختيار من متعدد) "
-                        "تساعده في تحديد ما يرغب به. الأسئلة يجب أن تكون حول المكونات المتوفرة (مثل: هل لديك بيض؟) أو التفضيلات (مثل: هل تفضل الحلو أم المالح؟). "
-                        "قم بإرجاع مصفوفة JSON تحتوي على 3 كائنات، كل كائن يحتوي على 'question' (نص السؤال) و 'options' (مصفوفة خيارات، على الأقل 2 خيار).\n"
-                        "مثال: [{\"question\": \"هل لديك بيض في الثلاجة؟\", \"options\": [\"نعم\", \"لا\"]}, ...]"
-                    )
-                    resp = client.chat.completions.create(
-                        model="deepseek/deepseek-chat",
-                        messages=[
-                            {"role": "system", "content": "أنت خبير طهي يساعد المستخدم الحائر. أجب فقط بصيغة JSON صالحة."},
-                            {"role": "user", "content": question_prompt}
-                        ],
-                        max_tokens=400,
-                        temperature=0.5,
-                    )
-                    output = resp.choices[0].message.content.strip()
-                    start = output.find('[')
-                    end = output.rfind(']') + 1
-                    if start != -1 and end != -1:
-                        st.session_state.wizard_questions = json.loads(output[start:end])
-                        st.session_state.wizard_step = 2
-                        st.rerun()
-                    else:
-                        st.error("تعذّر توليد الأسئلة. يرجى المحاولة مرة أخرى.")
-                        st.session_state.wizard_active = False
-                        st.session_state.wizard_step = 0
-                        st.rerun()
-                except Exception as e:
-                    st.error(f"حدث خطأ: {e}")
-                    st.session_state.wizard_active = False
-                    st.session_state.wizard_step = 0
-                    st.rerun()
-
-        # --- Wizard Step 2: Show Questions ---
-        elif st.session_state.wizard_step == 2:
-            st.info("📝 أجبِ عن الأسئلة التالية ليساعدني في اقتراح أفضل وصفة لك:")
-            questions = st.session_state.wizard_questions
-            answers = {}
-
-            for i, q in enumerate(questions):
-                answer = st.radio(
-                    q["question"],
-                    options=q["options"],
-                    key=f"wizard_q_{i}",
-                    index=None,
-                    horizontal=True
-                )
-                if answer:
-                    answers[i] = answer
-
-            col_wiz1, col_wiz2 = st.columns(2)
-            with col_wiz1:
-                if st.button("🔙 إلغاء", use_container_width=True):
-                    st.session_state.wizard_active = False
-                    st.session_state.wizard_step = 0
-                    st.rerun()
-            with col_wiz2:
-                if st.button("💡 احصل على اقتراحاتي", disabled=len(answers) < len(questions), use_container_width=True):
-                    st.session_state.wizard_answers = answers
-                    st.session_state.wizard_step = 3
-                    st.rerun()
-
-        # --- Wizard Step 3: Generate Suggestions ---
-        elif st.session_state.wizard_step == 3:
-            with st.spinner("🧠 الذكاء الاصطناعي يفكر في أفضل الخيارات لك..."):
-                try:
-                    meal_type = st.session_state.selected_type
-                    max_time = st.session_state.max_time
-                    answers_text = "\n".join([f"- س: {st.session_state.wizard_questions[i]['question']} ج: {ans}" for i, ans in st.session_state.wizard_answers.items()])
-
-                    suggest_prompt = (
-                        f"المستخدم يريد وجبة '{meal_type}' في {max_time} دقيقة.\n"
-                        f"إجاباته على الأسئلة:\n{answers_text}\n\n"
-                        "بناءً على هذه المعلومات، قم بإنشاء 3-5 اقتراحات لوجبات محددة (قد تكون من معرفتك العامة أو من وصفات مشهورة). "
-                        "لكل وجبة، اذكر الاسم، قائمة المكونات الأساسية، وتعليقاً قصيراً عن سبب ملاءمتها.\n"
-                        "أعد مصفوفة JSON تحتوي على كائنات، كل كائن يحتوي على: 'name' (اسم الوصفة)، 'ingredients' (مصفوفة نصوص)، 'comment' (تعليق).\n"
-                        "مثال: [{\"name\": \"عجة البيض بالجبنة\", \"ingredients\": [\"بيض\", \"جبنة\", \"زيت\"], \"comment\": \"سريعة ولذيذة، تناسب الفطور\"}]"
-                    )
-                    resp = client.chat.completions.create(
-                        model="deepseek/deepseek-chat",
-                        messages=[
-                            {"role": "system", "content": "أنت خبير طهي مبدع. أجب فقط بصيغة JSON صالحة."},
-                            {"role": "user", "content": suggest_prompt}
-                        ],
-                        max_tokens=600,
-                        temperature=0.7,
-                    )
-                    output = resp.choices[0].message.content.strip()
-                    start = output.find('[')
-                    end = output.rfind(']') + 1
-                    if start != -1 and end != -1:
-                        st.session_state.wizard_suggestions = json.loads(output[start:end])
-                        st.session_state.wizard_step = 4
-                        st.rerun()
-                    else:
-                        st.error("تعذّر توليد الاقتراحات. حاول مرة أخرى.")
-                        st.session_state.wizard_active = False
-                        st.session_state.wizard_step = 0
-                        st.rerun()
-                except Exception as e:
-                    st.error(f"حدث خطأ: {e}")
-                    st.session_state.wizard_active = False
-                    st.session_state.wizard_step = 0
-                    st.rerun()
-
-        # --- Wizard Step 4: Show Suggestions ---
-        elif st.session_state.wizard_step == 4:
-            st.success("✅ إليك بعض الاقتراحات المثالية لك:")
-            suggestions = st.session_state.wizard_suggestions
-
-            for idx, sug in enumerate(suggestions):
-                with st.container(border=True):
-                    st.markdown(f"**{idx+1}. {sug['name']}**")
-                    st.caption(f"المكونات: {', '.join(sug['ingredients'])}")
-                    st.write(f"💬 {sug.get('comment', '')}")
-                    if st.button(f"👨‍🍳 اختر هذه ({sug['name']})", key=f"wizard_choose_{idx}"):
-                        # Create a virtual recipe
-                        virtual_recipe = {
-                            "recipe_Id": f"virtual_{idx}",
-                            "recipe_Nme": sug['name'],
-                            "ingredients_Items": ', '.join(sug['ingredients']),
-                            "meal_Type": st.session_state.selected_type,
-                            "max_Time": st.session_state.max_time,
-                            "pics": None,
-                            "comment": f"تم اقتراحها بواسطة المساعد الذكي بناءً على اختياراتك: {sug.get('comment', '')}",
-                            "is_virtual": True
-                        }
-                        st.session_state.selected_recipe = virtual_recipe
-                        st.session_state.stage = "detail"
-                        # Reset wizard state
-                        st.session_state.wizard_active = False
-                        st.session_state.wizard_step = 0
-                        st.rerun()
-
-            if st.button("🔄 ابدأ من جديد (مساعد جديد)", use_container_width=True):
-                st.session_state.wizard_active = False
-                st.session_state.wizard_step = 0
-                st.rerun()
-
-        # ================================================================
-        # End of Wizard section
-        # ================================================================
-
-    # ---------- Regular ingredient-based search (unchanged) ----------
     col1, col2 = st.columns(2)
     with col1:  # العمود الأيمن – زر البحث الأساسي
         user_items = [INGREDIENT_MAP[label] for label in checked_labels]
@@ -621,6 +457,186 @@ elif st.session_state.stage == "ingredients":
 
     if st.session_state.error_msg:
         st.warning(st.session_state.error_msg)
+
+    # =================================================================
+    # NEW: WIZARD (AI Assistant) – MOVED TO BOTTOM OF THE PAGE
+    # =================================================================
+    st.markdown("---")
+    st.markdown("### 🤔 محتارة؟ دعي الذكاء الاصطناعي يساعدك في الاختيار!")
+    st.caption("سيسألك الذكاء الاصطناعي بعض الأسئلة ليقدم لك اقتراحات مخصصة بناءً على اختياراتك.")
+
+    # Capture user items for the wizard
+    user_items = [INGREDIENT_MAP[label] for label in checked_labels] if checked_labels else []
+
+    if not st.session_state.wizard_active:
+        if st.button("✨ اسأليني وأنا أختار لك", use_container_width=True):
+            st.session_state.wizard_active = True
+            st.session_state.wizard_step = 1
+            st.rerun()
+    else:
+        # --- Wizard Step 1: Generate Questions ---
+        if st.session_state.wizard_step == 1:
+            with st.spinner("الذكاء الاصطناعي يجهز لك أسئلة مخصصة..."):
+                try:
+                    meal_type = st.session_state.selected_type
+                    max_time = st.session_state.max_time
+
+                    # Build the prompt with user items if they exist
+                    user_items_text = ""
+                    if user_items:
+                        user_items_text = f"المستخدم لديه بالفعل هذه المكونات: {', '.join(user_items)}. "
+
+                    question_prompt = (
+                        f"المستخدم يريد تحضير وجبة من نوع '{meal_type}'، ولديه وقت أقصاه {max_time} دقيقة. "
+                        f"{user_items_text}"
+                        "هو حائر ولا يعرف ماذا يختار. قم بإنشاء 3 أسئلة إرشادية ذكية ومتنوعة (أسئلة اختيار من متعدد) "
+                        "تساعده في تحديد ما يرغب به. الأسئلة يجب أن تكون حول المكونات المتوفرة (مثل: هل لديك بيض؟) أو التفضيلات (مثل: هل تفضل الحلو أم المالح؟). "
+                        "إذا كان المستخدم قد حدد بعض المكونات بالفعل، حاول أن تكون الأسئلة مكملة لها لتضييق الخيارات."
+                        "قم بإرجاع مصفوفة JSON تحتوي على 3 كائنات، كل كائن يحتوي على 'question' (نص السؤال) و 'options' (مصفوفة خيارات، على الأقل 2 خيار).\n"
+                        "مثال: [{\"question\": \"هل لديك بيض في الثلاجة؟\", \"options\": [\"نعم\", \"لا\"]}, ...]"
+                    )
+                    resp = client.chat.completions.create(
+                        model="deepseek/deepseek-chat",
+                        messages=[
+                            {"role": "system", "content": "أنت خبير طهي يساعد المستخدم الحائر. أجب فقط بصيغة JSON صالحة."},
+                            {"role": "user", "content": question_prompt}
+                        ],
+                        max_tokens=400,
+                        temperature=0.5,
+                    )
+                    output = resp.choices[0].message.content.strip()
+                    start = output.find('[')
+                    end = output.rfind(']') + 1
+                    if start != -1 and end != -1:
+                        st.session_state.wizard_questions = json.loads(output[start:end])
+                        st.session_state.wizard_step = 2
+                        st.rerun()
+                    else:
+                        st.error("تعذّر توليد الأسئلة. يرجى المحاولة مرة أخرى.")
+                        st.session_state.wizard_active = False
+                        st.session_state.wizard_step = 0
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"حدث خطأ: {e}")
+                    st.session_state.wizard_active = False
+                    st.session_state.wizard_step = 0
+                    st.rerun()
+
+        # --- Wizard Step 2: Show Questions ---
+        elif st.session_state.wizard_step == 2:
+            st.info("📝 أجبِ عن الأسئلة التالية ليساعدني في اقتراح أفضل وصفة لك:")
+            questions = st.session_state.wizard_questions
+            answers = {}
+
+            for i, q in enumerate(questions):
+                answer = st.radio(
+                    q["question"],
+                    options=q["options"],
+                    key=f"wizard_q_{i}",
+                    index=None,
+                    horizontal=True
+                )
+                if answer:
+                    answers[i] = answer
+
+            col_wiz1, col_wiz2 = st.columns(2)
+            with col_wiz1:
+                if st.button("🔙 إلغاء", use_container_width=True):
+                    st.session_state.wizard_active = False
+                    st.session_state.wizard_step = 0
+                    st.rerun()
+            with col_wiz2:
+                if st.button("💡 احصل على اقتراحاتي", disabled=len(answers) < len(questions), use_container_width=True):
+                    st.session_state.wizard_answers = answers
+                    st.session_state.wizard_step = 3
+                    st.rerun()
+
+        # --- Wizard Step 3: Generate Suggestions ---
+        elif st.session_state.wizard_step == 3:
+            with st.spinner("🧠 الذكاء الاصطناعي يفكر في أفضل الخيارات لك..."):
+                try:
+                    meal_type = st.session_state.selected_type
+                    max_time = st.session_state.max_time
+                    answers_text = "\n".join([f"- س: {st.session_state.wizard_questions[i]['question']} ج: {ans}" for i, ans in st.session_state.wizard_answers.items()])
+
+                    # Build user items text for suggestions
+                    user_items_text = ""
+                    if user_items:
+                        user_items_text = f"المستخدم لديه بالفعل هذه المكونات: {', '.join(user_items)}. "
+
+                    suggest_prompt = (
+                        f"المستخدم يريد وجبة '{meal_type}' في {max_time} دقيقة.\n"
+                        f"{user_items_text}"
+                        f"إجاباته على الأسئلة:\n{answers_text}\n\n"
+                        "بناءً على هذه المعلومات، قم بإنشاء 3-5 اقتراحات لوجبات محددة (قد تكون من معرفتك العامة أو من وصفات مشهورة). "
+                        "إذا كان المستخدم قد حدد مكونات، حاول أن تكون الاقتراحات متوافقة معها قدر الإمكان.\n"
+                        "لكل وجبة، اذكر الاسم، قائمة المكونات الأساسية، وتعليقاً قصيراً عن سبب ملاءمتها.\n"
+                        "أعد مصفوفة JSON تحتوي على كائنات، كل كائن يحتوي على: 'name' (اسم الوصفة)، 'ingredients' (مصفوفة نصوص)، 'comment' (تعليق).\n"
+                        "مثال: [{\"name\": \"عجة البيض بالجبنة\", \"ingredients\": [\"بيض\", \"جبنة\", \"زيت\"], \"comment\": \"سريعة ولذيذة، تناسب الفطور\"}]"
+                    )
+                    resp = client.chat.completions.create(
+                        model="deepseek/deepseek-chat",
+                        messages=[
+                            {"role": "system", "content": "أنت خبير طهي مبدع. أجب فقط بصيغة JSON صالحة."},
+                            {"role": "user", "content": suggest_prompt}
+                        ],
+                        max_tokens=600,
+                        temperature=0.7,
+                    )
+                    output = resp.choices[0].message.content.strip()
+                    start = output.find('[')
+                    end = output.rfind(']') + 1
+                    if start != -1 and end != -1:
+                        st.session_state.wizard_suggestions = json.loads(output[start:end])
+                        st.session_state.wizard_step = 4
+                        st.rerun()
+                    else:
+                        st.error("تعذّر توليد الاقتراحات. حاول مرة أخرى.")
+                        st.session_state.wizard_active = False
+                        st.session_state.wizard_step = 0
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"حدث خطأ: {e}")
+                    st.session_state.wizard_active = False
+                    st.session_state.wizard_step = 0
+                    st.rerun()
+
+        # --- Wizard Step 4: Show Suggestions ---
+        elif st.session_state.wizard_step == 4:
+            st.success("✅ إليك بعض الاقتراحات المثالية لك:")
+            suggestions = st.session_state.wizard_suggestions
+
+            for idx, sug in enumerate(suggestions):
+                with st.container(border=True):
+                    st.markdown(f"**{idx+1}. {sug['name']}**")
+                    st.caption(f"المكونات: {', '.join(sug['ingredients'])}")
+                    st.write(f"💬 {sug.get('comment', '')}")
+                    if st.button(f"👨‍🍳 اختر هذه ({sug['name']})", key=f"wizard_choose_{idx}"):
+                        # Create a virtual recipe
+                        virtual_recipe = {
+                            "recipe_Id": f"virtual_{idx}",
+                            "recipe_Nme": sug['name'],
+                            "ingredients_Items": ', '.join(sug['ingredients']),
+                            "meal_Type": st.session_state.selected_type,
+                            "max_Time": st.session_state.max_time,
+                            "pics": None,
+                            "comment": f"تم اقتراحها بواسطة المساعد الذكي بناءً على اختياراتك: {sug.get('comment', '')}",
+                            "is_virtual": True
+                        }
+                        # If user had selected ingredients, store them for the detail page
+                        if user_items:
+                            st.session_state._last_user_items = user_items
+                        st.session_state.selected_recipe = virtual_recipe
+                        st.session_state.stage = "detail"
+                        # Reset wizard state
+                        st.session_state.wizard_active = False
+                        st.session_state.wizard_step = 0
+                        st.rerun()
+
+            if st.button("🔄 ابدأ من جديد (مساعد جديد)", use_container_width=True):
+                st.session_state.wizard_active = False
+                st.session_state.wizard_step = 0
+                st.rerun()
 
 # ---------------------------------------------------------------------------
 # STAGE 3: NO MATCH
